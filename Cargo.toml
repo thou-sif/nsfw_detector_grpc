@@ -1,0 +1,14 @@
+[package]
+name = "nsfw_detector_grpc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = "0.25.6"
+prost = "0.13.5"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.45.0", features = ["full"] }
+tonic = "0.13.1"
+
+[build-dependencies]
+tonic-build = "0.13.1"

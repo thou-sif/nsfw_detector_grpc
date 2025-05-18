@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package nsfw_detector_service; // Define a package name for your service
+
+// The request message containing the image data or identifier
+message NsfwDetectionRequest {
+  // For now, let's keep it simple. We'll refine this later.
+  // Option 1: Send raw image bytes
+  bytes image_data = 1;
+  // Option 2: Send a unique identifier for the image (e.g., a filename or ID)
+  // string image_identifier = 2;
+}
+
+// The response message containing the detection result
+message NsfwDetectionResponse {
+  string classification_result = 1; // e.g., "SAFE", "NSFW"
+  float confidence_score = 2;     // Confidence of the classification
+}
+
+// The NSFW detection service definition
+service NsfwDetector {
+  // RPC method to detect NSFW content
+  rpc DetectNsfw (NsfwDetectionRequest) returns (NsfwDetectionResponse);
+}
