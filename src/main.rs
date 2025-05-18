@@ -63,7 +63,17 @@
 //     Ok(())
 // }
 
+mod model_config;
+mod nsfw_model;
+use nsfw_model::{GLOBAL_MODEL, ModelError}; // Use our global model and error type
+use image::ImageFormat; // For guessing image format
+use std::io::Cursor;    // For reading image bytes
+use std::sync::Arc;
+
 use tonic::{transport::Server, Request, Response, Status};
+use nsfw_detector_service::{
+    nsfw_detection_request::ImageSource, // Import the generated ImageSource oneof
+};
 
 // This imports the generated gRPC code from the "nsfw_detector_service" package
 // defined in your .proto file.
@@ -95,83 +105,182 @@ impl NsfwDetector for MyNsfwDetector {
         println!("Got a request: {:?}", request_inner);
 
         let request_id = request_inner.request_id.clone(); // Store request_id to echo back
+        let mut error_message = String::new();
+        let mut model_version_str = "unknown".to_string();
 
-        // --- Placeholder Logic ---
-        // In a real implementation, you would:
-        // 1. Get image data (from request_inner.image_source: image_data or image_url)
-        // 2. Preprocess the image
-        // 3. Run inference with the Falconsai model
-        // 4. Populate the response based on model output
-
-        let (classification, scores) =
-            if request_inner.image_source.is_some() {
-                // Simulate some processing if image_source is present
-                // For example, if image_data is not empty or image_url is provided
-                let is_potentially_valid_input = match &request_inner.image_source {
-                    Some(source) => match source {
-                        nsfw_detector_service::nsfw_detection_request::ImageSource::ImageData(data) => !data.is_empty(),
-                        nsfw_detector_service::nsfw_detection_request::ImageSource::ImageUrl(url) => !url.is_empty(),
-                    },
-                    None => false,
+        // 1. Get a reference to the global model
+        // This will initialize it on first use.
+        let model_result = &*GLOBAL_MODEL; // Dereference Lazy to get the Result
+        let model_instance: Arc<nsfw_model::NsfwModel> = match model_result {
+            Ok(model_arc) => model_arc.clone(),
+            Err(model_err) => {
+                eprintln!("Failed to load NSFW model: {:?}", model_err);
+                let reply = NsfwDetectionResponse {
+                    request_id,
+                    overall_classification: ClassificationLabel::Unknown as i32,
+                    scores: vec![],
+                    model_version: model_version_str,
+                    error_message: format!("Model loading failed: {}", model_err),
                 };
-
-                if is_potentially_valid_input {
-                    // Placeholder: Simulate a "NORMAL" classification
-                    (
-                        ClassificationLabel::Normal,
-                        vec![
-                            DetectionScore {
-                                label: ClassificationLabel::Normal as i32, // Cast enum to i32 for proto
-                                score: 0.95,
-                            },
-                            DetectionScore {
-                                label: ClassificationLabel::Nsfw as i32,
-                                score: 0.05,
-                            },
-                        ],
-                    )
-                } else {
-                    // No valid image source provided
-                    (
-                        ClassificationLabel::Unknown,
-                        vec![
-                            DetectionScore {
-                                label: ClassificationLabel::Unknown as i32,
-                                score: 1.0,
-                            },
-                        ]
-                    )
-                }
-            } else {
-                // No image source provided
-                (
-                    ClassificationLabel::Unknown,
-                    vec![
-                        DetectionScore {
-                            label: ClassificationLabel::Unknown as i32,
-                            score: 1.0,
-                        },
-                    ]
-                )
-            };
-        let reply = NsfwDetectionResponse {
-            request_id, // Echo back the request_id
-            overall_classification: classification as i32, // Cast enum to i32 for proto
-            scores,
-            model_version: "v0.0.1-placeholder".to_string(),
-            error_message: if classification == ClassificationLabel::Unknown {
-                "No valid image data provided".to_string()
-            } else {
-                "".to_string()
-            },
+                return Ok(Response::new(reply));
+            }
         };
 
-        Ok(Response::new(reply))
+        // 2. Obtain image bytes
+        let image_bytes: Vec<u8> = match request_inner.image_source {
+            Some(ImageSource::ImageData(data)) => {
+                if data.is_empty() {
+                    error_message = "Received empty image_data.".to_string();
+                    Vec::new()
+                } else {
+                    data
+                }
+            }
+            Some(ImageSource::ImageUrl(url_str)) => {
+                if url_str.is_empty() {
+                    error_message = "Received empty image_url.".to_string();
+                    Vec::new()
+                } else {
+                    println!("Fetching image from URL: {}", url_str);
+                    // Asynchronously fetch the image
+                    // Make sure reqwest is built with an async-compatible TLS backend (like rustls)
+                    match reqwest::get(&url_str).await {
+                        Ok(response) => match response.bytes().await {
+                            Ok(bytes) => bytes.to_vec(),
+                            Err(e) => {
+                                error_message = format!("Failed to read bytes from URL {}: {}", url_str, e);
+                                Vec::new()
+                            }
+                        },
+                        Err(e) => {
+                            error_message = format!("Failed to fetch image from URL {}: {}", url_str, e);
+                            Vec::new()
+                        }
+                    }
+                }
+            }
+            None => {
+                error_message = "No image_source provided in the request.".to_string();
+                Vec::new()
+            }
+        };
+        if !error_message.is_empty() || image_bytes.is_empty() {
+            let final_error_message = if error_message.is_empty() {
+                "No image data could be processed.".to_string()
+            } else {
+                error_message
+            };
+            eprintln!("{}", final_error_message);
+            let reply = NsfwDetectionResponse {
+                request_id,
+                overall_classification: ClassificationLabel::Unknown as i32,
+                scores: vec![],
+                model_version: model_version_str,
+                error_message: final_error_message,
+            };
+            return Ok(Response::new(reply));
+        }
+
+        // 3. Decode image (using tokio::task::spawn_blocking for potentially CPU-bound image decoding)
+        let dynamic_image_result = tokio::task::spawn_blocking(move || {
+            image::load_from_memory(&image_bytes)
+        }).await.map_err(|e| Status::internal(format!("Task join error: {}", e)))?.map_err(|e| {
+            error_message = format!("Failed to decode image: {}", e);
+            Status::invalid_argument(error_message.clone()) // Use the captured error_message
+        });
+
+        let dynamic_image = match dynamic_image_result {
+            Ok(img) => img,
+            Err(status) => {
+                eprintln!("Image decoding failed: {}", status.message());
+                let reply = NsfwDetectionResponse {
+                    request_id,
+                    overall_classification: ClassificationLabel::Unknown as i32,
+                    scores: vec![],
+                    model_version: model_version_str, // Use already fetched model_version if available
+                    error_message: status.message().to_string(),
+                };
+                return Ok(Response::new(reply));
+            }
+        };
+
+        // 4. Perform prediction (also in spawn_blocking if model inference is blocking)
+        // The `tract` operations themselves can be CPU intensive.
+        let prediction_result = tokio::task::spawn_blocking(move || {
+            // The model instance is an Arc, so it can be moved into the closure
+            model_instance.predict(dynamic_image)
+        }).await;
+
+        match prediction_result {
+            Ok(Ok((probabilities, version))) => {
+                model_version_str = version;
+                // Assuming id2label: {"0": "normal", "1": "nsfw"}
+                // And probabilities are [prob_normal, prob_nsfw]
+                let prob_normal = probabilities.get(0).copied().unwrap_or(0.0);
+                let prob_nsfw = probabilities.get(1).copied().unwrap_or(0.0);
+
+                let classification = if prob_nsfw > prob_normal && prob_nsfw > 0.5 { // Example threshold
+                    ClassificationLabel::Nsfw
+                } else {
+                    ClassificationLabel::Normal
+                };
+
+                let scores = vec![
+                    DetectionScore {
+                        label: ClassificationLabel::Normal as i32,
+                        score: prob_normal,
+                    },
+                    DetectionScore {
+                        label: ClassificationLabel::Nsfw as i32,
+                        score: prob_nsfw,
+                    },
+                ];
+
+                let reply = NsfwDetectionResponse {
+                    request_id,
+                    overall_classification: classification as i32,
+                    scores,
+                    model_version: model_version_str,
+                    error_message: "".to_string(),
+                };
+                Ok(Response::new(reply))
+            }
+            Ok(Err(model_err)) => {
+                let err_msg = format!("Model prediction error: {:?}", model_err);
+                eprintln!("{}", err_msg);
+                let reply = NsfwDetectionResponse {
+                    request_id,
+                    overall_classification: ClassificationLabel::Unknown as i32,
+                    scores: vec![],
+                    model_version: model_version_str,
+                    error_message: err_msg,
+                };
+                Ok(Response::new(reply))
+            }
+            Err(join_err) => { // Tokio task join error
+                let err_msg = format!("Prediction task failed: {}", join_err);
+                eprintln!("{}", err_msg);
+                let reply = NsfwDetectionResponse {
+                    request_id,
+                    overall_classification: ClassificationLabel::Unknown as i32,
+                    scores: vec![],
+                    model_version: model_version_str,
+                    error_message: err_msg,
+                };
+                Ok(Response::new(reply))
+            }
+        }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Setup logging (optional, but good for seeing errors from reqwest, tonic, etc.)
+    // You can use `tracing_subscriber` or `env_logger`.
+    // Example with env_logger:
+    // env_logger::init();
+    // Or with tracing:
+    tracing_subscriber::fmt::init();
     let addr = "[::1]:50051".parse()?;
     let detector_service = MyNsfwDetector::default();
 
