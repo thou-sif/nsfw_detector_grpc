@@ -1,3 +1,4 @@
+// src/nsfw_model.rs
 use crate::model_config::PreprocessorConfig;
 use image::{DynamicImage, Pixel, RgbImage};
 use ndarray::{Array, IxDyn}; 
@@ -32,7 +33,7 @@ pub enum ModelError {
 
 
 pub struct NsfwModel {
-    session: Session, // ort::Session
+    session: Session,
     preprocessor_config: PreprocessorConfig,
 }
 
@@ -64,28 +65,17 @@ impl NsfwModel {
         println!("Preprocessor config loaded: {:?}", preprocessor_config);
         println!("Creating model with input image size: {}x{}",
                  preprocessor_config.size.width, preprocessor_config.size.height);
-
-        // 1. Create an ONNX Runtime Environment
-        // The environment must be alive for the duration of the session.
-        // Using Arc to manage its lifetime alongside the session.
-        // let environment = Arc::new(
-        //     Environment
-        //         .with_name("nsfw_detector_env")
-        //         .build()?,
-        // );
-
-        // 2. Create a Session
-        // SessionBuilder takes a reference to the environment.
+        
         println!("Loading ONNX model with ONNX Runtime...");
         let session = SessionBuilder::new()?
-            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)? // Optional: for performance
-            .with_intra_threads(num_cpus::get() as i16 as usize)? // Optional: use all available CPUs
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
+            .with_intra_threads(num_cpus::get())? 
             .commit_from_file(model_path)?;
 
         println!("ONNX Runtime session created successfully.");
         // You can print model input/output details if needed:
-        // session.inputs.iter().for_each(|input| println!("Input: {:?}", input));
-        // session.outputs.iter().for_each(|output| println!("Output: {:?}", output));
+        session.inputs.iter().for_each(|input| println!("Input: {:?}", input));
+        session.outputs.iter().for_each(|output| println!("Output: {:?}", output));
 
         Ok(Self {
             session,
@@ -144,31 +134,6 @@ impl NsfwModel {
         // Return the dynamic array
         Ok(array.into_dyn())
     }
-
-    // Preprocessing remains largely the same logic, but output is ndarray::Array
-    // fn preprocess(&self, image: DynamicImage) -> Result<Array<f32, IxDyn>, ModelError> { // IxDyn for [1,3,H,W]
-    //     let config = &self.preprocessor_config;
-    //     let target_height = config.size.height;
-    //     let target_width = config.size.width;
-    // 
-    //     let resized_image = image.resize_exact(
-    //         target_width as u32,
-    //         target_height as u32,
-    //         image::imageops::FilterType::Triangle,
-    //     );
-    //     let rgb_image: RgbImage = resized_image.to_rgb8();
-    // 
-    //     // Create tensor in NCHW format: [1, 3, Height, Width]
-    //     let mut array = Array::zeros((1, 3, target_height, target_width));
-    //     for (y, x, pixel) in rgb_image.enumerate_pixels() {
-    //         let rgb = pixel.to_rgb(); // Rgb<u8>
-    //         // Normalize (pixel / 255.0 - 0.5) / 0.5  which is (pixel / 127.5) - 1.0
-    //         array[[0, 0, y as usize, x as usize]] = (rgb[0] as f32 / 127.5) - 1.0; // R
-    //         array[[0, 1, y as usize, x as usize]] = (rgb[1] as f32 / 127.5) - 1.0; // G
-    //         array[[0, 2, y as usize, x as usize]] = (rgb[2] as f32 / 127.5) - 1.0; // B
-    //     }
-    //     Ok(array.into_dyn()) // Convert to Array<f32, IxDyn>
-    // }
     pub fn predict(&self, image: DynamicImage) -> Result<(Vec<f32>, String), ModelError> {
         // 1. Preprocess the image to get an ndarray
         let processed_tensor: Array<f32, IxDyn> = self.preprocess(image)?; // Shape [1, 3, H, W]

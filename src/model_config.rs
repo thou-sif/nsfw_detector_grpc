@@ -19,11 +19,3 @@ pub struct ImageSize {
     pub height: usize,
     pub width: usize,
 }
-// You could also add a struct for config.json if you need id2label,
-// but for binary NSFW/Normal, we can often infer it.
-// For this example, we'll assume "normal" is index 0 and "nsfw" is index 1
-// as per Falconsai/nsfw_image_detection/config.json
-// "id2label": {
-//    "0": "normal",
-//    "1": "nsfw"
-//  }

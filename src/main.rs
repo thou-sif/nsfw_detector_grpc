@@ -1,85 +1,17 @@
-// use tonic::{transport::Server, Request, Response, Status};
-//
-// // This imports the generated gRPC code.
-// // The name `nsfw_detector_service` matches the package name in your .proto file.
-// // `nsfw_detector_server` contains the server traits.
-// // `NsfwDetector` is the name of our service.
-// // `NsfwDetectionRequest` and `NsfwDetectionResponse` are our message types.
-// pub mod nsfw_detector_service {
-//     tonic::include_proto!("nsfw_detector_service"); // The string must match the package name in .proto
-// }
-//
-// use nsfw_detector_service::{
-//     nsfw_detector_server::{NsfwDetector, NsfwDetectorServer},
-//     NsfwDetectionRequest, NsfwDetectionResponse,
-// };
-//
-// // Define a struct that will implement our service's business logic
-// #[derive(Debug, Default)]
-// pub struct MyNsfwDetector {}
-//
-// // Implement the NsfwDetector trait for our struct
-// #[tonic::async_trait]
-// impl NsfwDetector for MyNsfwDetector {
-//     // Implement the DetectNsfw RPC method
-//     async fn detect_nsfw(
-//         &self,
-//         request: Request<NsfwDetectionRequest>,
-//     ) -> Result<Response<NsfwDetectionResponse>, Status> {
-//         println!("Got a request: {:?}", request.get_ref());
-//
-//         let request_data = request.into_inner();
-//
-//         // Placeholder logic:
-//         // If image_data is not empty, classify as "SAFE" (for now)
-//         // Otherwise, return an error or a default classification.
-//         let classification = if !request_data.image_data.is_empty() {
-//             "SAFE (Placeholder)".to_string()
-//         } else {
-//             "UNKNOWN (No data)".to_string()
-//         };
-//
-//         let reply = NsfwDetectionResponse {
-//             classification_result: classification,
-//             confidence_score: 0.99, // Placeholder confidence
-//         };
-//
-//         Ok(Response::new(reply)) // Send back the response
-//     }
-// }
-//
-// #[tokio::main]
-// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//     let addr = "[::1]:50051".parse()?; // Standard gRPC address (IPv6 loopback)
-//     let detector_service = MyNsfwDetector::default();
-//
-//     println!("NsfwDetectorServer listening on {}", addr);
-//
-//     Server::builder()
-//         .add_service(NsfwDetectorServer::new(detector_service))
-//         .serve(addr)
-//         .await?;
-//
-//     Ok(())
-// }
-
+// src/main.rs
 mod model_config;
 mod nsfw_model;
-use nsfw_model::{GLOBAL_MODEL, ModelError}; // Use our global model and error type
-use image::ImageFormat; // For guessing image format
-use std::io::Cursor;    // For reading image bytes
+use nsfw_model::{GLOBAL_MODEL};
 use std::sync::Arc;
 
 use tonic::{transport::Server, Request, Response, Status};
 use nsfw_detector_service::{
-    nsfw_detection_request::ImageSource, // Import the generated ImageSource oneof
+    nsfw_detection_request::ImageSource,
 };
 
-// This imports the generated gRPC code from the "nsfw_detector_service" package
-// defined in your .proto file.
 pub mod nsfw_detector_service {
     tonic::include_proto!("nsfw_detector_service");
-    // Expose the generated file_descriptor_set for reflection or other tools
+    
     pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("nsfw_detector_descriptor");
 }
@@ -101,15 +33,13 @@ impl NsfwDetector for MyNsfwDetector {
         &self,
         request: Request<NsfwDetectionRequest>,
     ) -> Result<Response<NsfwDetectionResponse>, Status> {
-        let request_inner = request.into_inner(); // Get the NsfwDetectionRequest
+        let request_inner = request.into_inner();
         println!("Got a request: {:?}", request_inner);
 
-        let request_id = request_inner.request_id.clone(); // Store request_id to echo back
+        let request_id = request_inner.request_id.clone();
         let mut error_message = String::new();
         let mut model_version_str = "unknown".to_string();
-
-        // 1. Get a reference to the global model
-        // This will initialize it on first use.
+        
         let model_result = &*GLOBAL_MODEL; // Dereference Lazy to get the Result
         let model_instance: Arc<nsfw_model::NsfwModel> = match model_result {
             Ok(model_arc) => model_arc.clone(),
@@ -142,8 +72,7 @@ impl NsfwDetector for MyNsfwDetector {
                     Vec::new()
                 } else {
                     println!("Fetching image from URL: {}", url_str);
-                    // Asynchronously fetch the image
-                    // Make sure reqwest is built with an async-compatible TLS backend (like rustls)
+                    
                     match reqwest::get(&url_str).await {
                         Ok(response) => match response.bytes().await {
                             Ok(bytes) => bytes.to_vec(),
@@ -180,8 +109,7 @@ impl NsfwDetector for MyNsfwDetector {
             };
             return Ok(Response::new(reply));
         }
-
-        // 3. Decode image (using tokio::task::spawn_blocking for potentially CPU-bound image decoding)
+        
         let dynamic_image_result = tokio::task::spawn_blocking(move || {
             image::load_from_memory(&image_bytes)
         }).await.map_err(|e| Status::internal(format!("Task join error: {}", e)))?.map_err(|e| {
@@ -203,11 +131,9 @@ impl NsfwDetector for MyNsfwDetector {
                 return Ok(Response::new(reply));
             }
         };
-
-        // 4. Perform prediction (also in spawn_blocking if model inference is blocking)
-        // The `tract` operations themselves can be CPU intensive.
+        
         let prediction_result = tokio::task::spawn_blocking(move || {
-            // The model instance is an Arc, so it can be moved into the closure
+            
             model_instance.predict(dynamic_image)
         }).await;
 
@@ -275,25 +201,21 @@ impl NsfwDetector for MyNsfwDetector {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Setup logging (optional, but good for seeing errors from reqwest, tonic, etc.)
-    // You can use `tracing_subscriber` or `env_logger`.
-    // Example with env_logger:
-    // env_logger::init();
-    // Or with tracing:
+    
     tracing_subscriber::fmt::init();
     let addr = "[::1]:50051".parse()?;
     let detector_service = MyNsfwDetector::default();
 
     println!("NsfwDetectorServer listening on {}", addr);
 
-    // Adding reflection service (optional, but useful for tools like grpcurl)
+    // Adding reflection service useful for tools like grpcurl
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(nsfw_detector_service::FILE_DESCRIPTOR_SET)
         .build_v1()?;
 
     Server::builder()
         .add_service(NsfwDetectorServer::new(detector_service))
-        .add_service(reflection_service) // Register the reflection service
+        .add_service(reflection_service) 
         .serve(addr)
         .await?;
 
