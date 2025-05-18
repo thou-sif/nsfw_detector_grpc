@@ -1,24 +1,87 @@
+//syntax = "proto3";
+//
+//package nsfw_detector_service; // Define a package name for your service
+//
+//// The request message containing the image data or identifier
+//message NsfwDetectionRequest {
+//  // For now, let's keep it simple. We'll refine this later.
+//  // Option 1: Send raw image bytes
+//  bytes image_data = 1;
+//  // Option 2: Send a unique identifier for the image (e.g., a filename or ID)
+//  // string image_identifier = 2;
+//}
+//
+//// The response message containing the detection result
+//message NsfwDetectionResponse {
+//  string classification_result = 1; // e.g., "SAFE", "NSFW"
+//  float confidence_score = 2;     // Confidence of the classification
+//}
+//
+//// The NSFW detection service definition
+//service NsfwDetector {
+//  // RPC method to detect NSFW content
+//  rpc DetectNsfw (NsfwDetectionRequest) returns (NsfwDetectionResponse);
+//}
+
 syntax = "proto3";
 
-package nsfw_detector_service; // Define a package name for your service
+package nsfw_detector_service; // Package name for the generated Rust module
 
-// The request message containing the image data or identifier
-message NsfwDetectionRequest {
-  // For now, let's keep it simple. We'll refine this later.
-  // Option 1: Send raw image bytes
-  bytes image_data = 1;
-  // Option 2: Send a unique identifier for the image (e.g., a filename or ID)
-  // string image_identifier = 2;
+// Enum for classification results for better type safety and clarity
+enum ClassificationLabel {
+  CLASSIFICATION_LABEL_UNSPECIFIED = 0; // Default, should not be used for actual results
+  NORMAL = 1;                           // Image is considered normal/safe
+  NSFW = 2;                             // Image is considered Not Safe For Work
+  UNKNOWN = 3;                          // Detection could not be reliably performed or an error occurred
 }
 
-// The response message containing the detection result
+// The request message for NSFW detection
+message NsfwDetectionRequest {
+  // Optional: A unique identifier for this request, useful for logging and tracing.
+  string request_id = 1;
+
+  // The source of the image. Choose one of the following:
+  oneof image_source {
+    bytes image_data = 2;   // Raw image bytes (e.g., JPEG, PNG content)
+    string image_url = 3;    // A URL from which the server should fetch the image
+  }
+
+  // Optional: Original filename of the image. Can be useful for context or if image_data is used.
+  string file_name = 4;      // e.g., "my_cat_photo.jpg"
+
+  // Optional: MIME type of the image if known (e.g., "image/jpeg", "image/png").
+  // This can help the server to process image_data more efficiently.
+  string mime_type = 5;
+}
+
+// Represents a score for a specific classification label
+message DetectionScore {
+  ClassificationLabel label = 1; // The label (e.g., NORMAL, NSFW)
+  float score = 2;               // The confidence score for this label (typically between 0.0 and 1.0)
+}
+
+// The response message containing the NSFW detection result
 message NsfwDetectionResponse {
-  string classification_result = 1; // e.g., "SAFE", "NSFW"
-  float confidence_score = 2;     // Confidence of the classification
+  // Echoes the request_id from the NsfwDetectionRequest, if provided.
+  string request_id = 1;
+
+  // The overall determined classification for the image.
+  ClassificationLabel overall_classification = 2;
+
+  // A list of scores for each relevant classification label.
+  // For a binary classifier, this might contain scores for NORMAL and NSFW.
+  repeated DetectionScore scores = 3;
+
+  // Optional: Version of the model used for this detection.
+  string model_version = 4;
+
+  // Optional: Provides more details if an error occurred during the detection process
+  // (beyond standard gRPC status codes).
+  string error_message = 5;
 }
 
 // The NSFW detection service definition
 service NsfwDetector {
-  // RPC method to detect NSFW content
+  // RPC method to detect NSFW content in an image
   rpc DetectNsfw (NsfwDetectionRequest) returns (NsfwDetectionResponse);
 }
