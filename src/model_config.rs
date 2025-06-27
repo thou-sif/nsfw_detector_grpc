@@ -1,4 +1,3 @@
-// src/model_config.rs
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]

@@ -1,27 +1,25 @@
-// src/main.rs
 mod model_config;
 mod nsfw_model;
-use nsfw_model::{GLOBAL_MODEL};
+use nsfw_model::GLOBAL_MODEL;
 use std::sync::Arc;
 
-use tonic::{transport::Server, Request, Response, Status};
-use nsfw_detector_service::{
-    nsfw_detection_request::ImageSource,
-};
+use nsfw_detector_service::nsfw_detection_request::ImageSource;
+use tonic::{Request, Response, Status, transport::Server};
 
 pub mod nsfw_detector_service {
     tonic::include_proto!("nsfw_detector_service");
-    
+
     pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("nsfw_detector_descriptor");
 }
 
 // Use the generated types
 use nsfw_detector_service::{
-    nsfw_detector_server::{NsfwDetector, NsfwDetectorServer},
     ClassificationLabel, // Our new enum
     DetectionScore,      // Our new message for scores
-    NsfwDetectionRequest, NsfwDetectionResponse,
+    NsfwDetectionRequest,
+    NsfwDetectionResponse,
+    nsfw_detector_server::{NsfwDetector, NsfwDetectorServer},
 };
 
 #[derive(Debug, Default)]
@@ -39,7 +37,7 @@ impl NsfwDetector for MyNsfwDetector {
         let request_id = request_inner.request_id.clone();
         let mut error_message = String::new();
         let mut model_version_str = "unknown".to_string();
-        
+
         let model_result = &*GLOBAL_MODEL; // Dereference Lazy to get the Result
         let model_instance: Arc<nsfw_model::NsfwModel> = match model_result {
             Ok(model_arc) => model_arc.clone(),
@@ -72,17 +70,19 @@ impl NsfwDetector for MyNsfwDetector {
                     Vec::new()
                 } else {
                     println!("Fetching image from URL: {}", url_str);
-                    
+
                     match reqwest::get(&url_str).await {
                         Ok(response) => match response.bytes().await {
                             Ok(bytes) => bytes.to_vec(),
                             Err(e) => {
-                                error_message = format!("Failed to read bytes from URL {}: {}", url_str, e);
+                                error_message =
+                                    format!("Failed to read bytes from URL {}: {}", url_str, e);
                                 Vec::new()
                             }
                         },
                         Err(e) => {
-                            error_message = format!("Failed to fetch image from URL {}: {}", url_str, e);
+                            error_message =
+                                format!("Failed to fetch image from URL {}: {}", url_str, e);
                             Vec::new()
                         }
                     }
@@ -109,13 +109,15 @@ impl NsfwDetector for MyNsfwDetector {
             };
             return Ok(Response::new(reply));
         }
-        
-        let dynamic_image_result = tokio::task::spawn_blocking(move || {
-            image::load_from_memory(&image_bytes)
-        }).await.map_err(|e| Status::internal(format!("Task join error: {}", e)))?.map_err(|e| {
-            error_message = format!("Failed to decode image: {}", e);
-            Status::invalid_argument(error_message.clone()) // Use the captured error_message
-        });
+
+        let dynamic_image_result =
+            tokio::task::spawn_blocking(move || image::load_from_memory(&image_bytes))
+                .await
+                .map_err(|e| Status::internal(format!("Task join error: {}", e)))?
+                .map_err(|e| {
+                    error_message = format!("Failed to decode image: {}", e);
+                    Status::invalid_argument(error_message.clone())
+                });
 
         let dynamic_image = match dynamic_image_result {
             Ok(img) => img,
@@ -125,27 +127,26 @@ impl NsfwDetector for MyNsfwDetector {
                     request_id,
                     overall_classification: ClassificationLabel::Unknown as i32,
                     scores: vec![],
-                    model_version: model_version_str, // Use already fetched model_version if available
+                    model_version: model_version_str,
                     error_message: status.message().to_string(),
                 };
                 return Ok(Response::new(reply));
             }
         };
-        
-        let prediction_result = tokio::task::spawn_blocking(move || {
-            
-            model_instance.predict(dynamic_image)
-        }).await;
+
+        let prediction_result =
+            tokio::task::spawn_blocking(move || model_instance.predict(dynamic_image)).await;
 
         match prediction_result {
             Ok(Ok((probabilities, version))) => {
                 model_version_str = version;
-                // Assuming id2label: {"0": "normal", "1": "nsfw"}
+                // id2label: {"0": "normal", "1": "nsfw"}
                 // And probabilities are [prob_normal, prob_nsfw]
                 let prob_normal = probabilities.get(0).copied().unwrap_or(0.0);
                 let prob_nsfw = probabilities.get(1).copied().unwrap_or(0.0);
 
-                let classification = if prob_nsfw > prob_normal && prob_nsfw > 0.5 { // Example threshold
+                let classification = if prob_nsfw > prob_normal && prob_nsfw > 0.5 {
+                    // Example threshold
                     ClassificationLabel::Nsfw
                 } else {
                     ClassificationLabel::Normal
@@ -183,7 +184,8 @@ impl NsfwDetector for MyNsfwDetector {
                 };
                 Ok(Response::new(reply))
             }
-            Err(join_err) => { // Tokio task join error
+            Err(join_err) => {
+                // Tokio task join error
                 let err_msg = format!("Prediction task failed: {}", join_err);
                 eprintln!("{}", err_msg);
                 let reply = NsfwDetectionResponse {
@@ -201,7 +203,6 @@ impl NsfwDetector for MyNsfwDetector {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    
     tracing_subscriber::fmt::init();
     let addr = "[::1]:50051".parse()?;
     let detector_service = MyNsfwDetector::default();
@@ -215,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::builder()
         .add_service(NsfwDetectorServer::new(detector_service))
-        .add_service(reflection_service) 
+        .add_service(reflection_service)
         .serve(addr)
         .await?;
 

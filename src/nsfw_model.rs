@@ -1,20 +1,19 @@
-// src/nsfw_model.rs
 use crate::model_config::PreprocessorConfig;
 use image::{DynamicImage, Pixel, RgbImage};
-use ndarray::{Array, IxDyn}; 
+use ndarray::{Array, IxDyn};
 use once_cell::sync::Lazy;
 use ort::inputs;
 
-use ort::session::{Session, SessionOutputs};
-use ort::session::builder::SessionBuilder;
 use ort::error::Error as OrtError;
+use ort::session::builder::SessionBuilder;
+use ort::session::{Session, SessionOutputs};
 use std::path::Path;
-use std::sync::Arc; 
+use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ModelError {
     #[error("ONNX Runtime error: {0}")]
-    Ort(#[from] OrtError), 
+    Ort(#[from] OrtError),
     #[error("Image processing error: {0}")]
     ImageProcessing(#[from] image::ImageError),
     #[error("I/O error: {0}")]
@@ -31,7 +30,6 @@ pub enum ModelError {
     OutputConversion,
 }
 
-
 pub struct NsfwModel {
     session: Session,
     preprocessor_config: PreprocessorConfig,
@@ -43,8 +41,10 @@ impl NsfwModel {
         let preprocessor_config_path = model_dir.join("preprocessor_config.json");
 
         println!("Loading model from: {:?}", model_path);
-        println!("Loading preprocessor config from: {:?}", preprocessor_config_path);
-
+        println!(
+            "Loading preprocessor config from: {:?}",
+            preprocessor_config_path
+        );
 
         if !model_path.exists() {
             return Err(ModelError::InvalidPath(format!(
@@ -60,22 +60,31 @@ impl NsfwModel {
         }
 
         let preprocessor_config_file = std::fs::File::open(preprocessor_config_path)?;
-        let preprocessor_config: PreprocessorConfig = serde_json::from_reader(preprocessor_config_file)?;
+        let preprocessor_config: PreprocessorConfig =
+            serde_json::from_reader(preprocessor_config_file)?;
 
         println!("Preprocessor config loaded: {:?}", preprocessor_config);
-        println!("Creating model with input image size: {}x{}",
-                 preprocessor_config.size.width, preprocessor_config.size.height);
-        
+        println!(
+            "Creating model with input image size: {}x{}",
+            preprocessor_config.size.width, preprocessor_config.size.height
+        );
+
         println!("Loading ONNX model with ONNX Runtime...");
         let session = SessionBuilder::new()?
             .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
-            .with_intra_threads(num_cpus::get())? 
+            .with_intra_threads(num_cpus::get())?
             .commit_from_file(model_path)?;
 
         println!("ONNX Runtime session created successfully.");
         // You can print model input/output details if needed:
-        session.inputs.iter().for_each(|input| println!("Input: {:?}", input));
-        session.outputs.iter().for_each(|output| println!("Output: {:?}", output));
+        session
+            .inputs
+            .iter()
+            .for_each(|input| println!("Input: {:?}", input));
+        session
+            .outputs
+            .iter()
+            .for_each(|output| println!("Output: {:?}", output));
 
         Ok(Self {
             session,
@@ -159,15 +168,10 @@ impl NsfwModel {
 
         let probabilities = softmax(logits_slice);
 
-        
-        let model_version = self
-            .preprocessor_config
-            .image_processor_type 
-            .clone();
+        let model_version = self.preprocessor_config.image_processor_type.clone();
 
         Ok((probabilities, model_version))
     }
-    
 }
 
 fn softmax(data: &[f32]) -> Vec<f32> {
